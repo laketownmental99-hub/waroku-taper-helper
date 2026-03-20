@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Waroku 漸増漸減ヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      0.6.3
+// @version      0.6.4
 // @description  waroku処方入力で薬剤の漸増・漸減スケジュールを一括入力するヘルパー（薬剤選択・複数規格対応）
 // @match        https://*.waroku.net/patient/karte*
 // @grant        none
@@ -140,11 +140,22 @@ function injectButtons() {
       if (hasRp) {
         const wrap = document.createElement('div');
         wrap.className = 'taper-helper-btn-wrap';
-        wrap.style.cssText = 'padding:8px 0 4px 8px;';
+        wrap.style.cssText = 'padding:8px 0 4px 8px;display:flex;gap:8px;align-items:center;';
         wrap.appendChild(makeTaperBtn());
+        // 前回のスケジュール状態があれば「スケジュール編集」ボタンも追加
+        if (lastScheduleState) {
+          wrap.appendChild(makeReopenBtn());
+        }
         // モーダル内の処方リスト末尾に追加
         const rpArea = doModal.querySelector('.rp-list') || hasRp.closest('.rp-list') || doModal;
         rpArea.appendChild(wrap);
+      }
+    }
+    // 既にボタンラップがあるが、スケジュール編集ボタンがない場合は追加
+    if (doModal && lastScheduleState) {
+      const wrap = doModal.querySelector('.taper-helper-btn-wrap');
+      if (wrap && !wrap.querySelector('.taper-reopen-btn')) {
+        wrap.appendChild(makeReopenBtn());
       }
     }
   }).observe(document.body, { childList: true, subtree: true });
@@ -154,8 +165,26 @@ function makeTaperBtn() {
   const b = document.createElement('button');
   b.className = 'taper-helper-btn';
   b.textContent = '漸増漸減';
-  b.style.cssText = 'margin-left:16px;padding:4px 14px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;';
+  b.style.cssText = 'padding:4px 14px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;';
   b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); openModal(); });
+  return b;
+}
+
+function makeReopenBtn() {
+  const b = document.createElement('button');
+  b.className = 'taper-reopen-btn';
+  b.textContent = '← スケジュール編集';
+  b.style.cssText = 'padding:4px 14px;background:#ff9800;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold;';
+  b.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (lastScheduleState) {
+      const { allMeds, variableMeds, orderRps, ctx } = lastScheduleState;
+      showScheduleModal(allMeds, variableMeds, orderRps, ctx);
+    } else {
+      openModal();
+    }
+  });
   return b;
 }
 
@@ -164,6 +193,7 @@ function makeTaperBtn() {
 // ============================================================
 
 let modalEl = null;
+let lastScheduleState = null; // 前回のスケジュール状態を記憶
 
 function destroyModal() { if (modalEl) { modalEl.remove(); modalEl = null; } }
 
@@ -188,7 +218,7 @@ function openModal() {
       });
   }));
 
-  // 薬剤が1つしかない場合はそのまま画面へ
+  // 薬剤が1つしかない場合はそのままスケジュール画面へ
   if (allMeds.length <= 1) {
     allMeds.forEach(m => { m._variable = true; });
     showScheduleModal(allMeds, allMeds, orderRps, ctx);
@@ -293,7 +323,7 @@ const ADMIN_DATA = [
     '1日1回', '2日に1回', '1週間に1回', '1週間に2回',
   ]},
   { cat: '処方（頓用）', items: [
-    '痛痛時', '発熱時', '不眠時', '不安時', '嘔気時', '頭痛時',
+    '疼痛時', '発熱時', '不眠時', '不安時', '嘔気時', '頭痛時',
     '便秘時', '咳嗽時',
   ]},
   { cat: '処方（外用）', items: [
@@ -508,7 +538,7 @@ function getTableState() {
 /** 薬剤名を短縮する */
 function shortName(name) {
   // 「錠」「カプセル」「OD錠」等の後ろの規格部分のみ残して短縮
-  const m = name.match(/^(.+?[錠剤粒包])(.*)$/);
+  const m = name.match(/^(.+?[\u9320\u5264\u7c92\u5305])(.*)$/);
   if (m && m[1].length > 10) return m[1].substring(0, 10) + '…' + (m[2] || '');
   if (name.length > 15) return name.substring(0, 15) + '…';
   return name;
@@ -914,6 +944,11 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
   const resultMsg = nonTaperRps.length > 0
     ? `${orderRps.length} 個のRpを作成しました。\n（非漸増漸減: ${nonTaperRps.length}個 + 漸増漸減: ${taperCount}個）\n内容を確認の上「指示」を押してください。`
     : `${orderRps.length} 個のRpを作成しました。\n内容を確認の上「指示」を押してください。`;
+  // スケジュール状態を記憶（Doフォームから再編集できるように）
+  lastScheduleState = { allMeds, variableMeds, orderRps, ctx };
+  // 既存のスケジュール編集ボタンを削除（MutationObserverが再注入する）
+  document.querySelectorAll('.taper-reopen-btn').forEach(b => b.remove());
+
   alert(resultMsg);
   destroyModal();
 }
@@ -924,7 +959,7 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
 
 function init() {
   setTimeout(injectButtons, 1500);
-  console.log('[漸増漸減ヘルパー] v0.6.3 初期化完了');
+  console.log('[漸増漸減ヘルパー] v0.6.4 初期化完了');
 }
 
 if (document.readyState === 'complete') init();
