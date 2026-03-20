@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Waroku 漸増漸減ヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      0.6.4
+// @version      0.6.5
 // @description  waroku処方入力で薬剤の漸増・漸減スケジュールを一括入力するヘルパー（薬剤選択・複数規格対応）
 // @match        https://*.waroku.net/patient/karte*
 // @grant        none
@@ -67,16 +67,16 @@ function deepClean(obj) {
 // ============================================================
 
 function extractMg(name) {
-  const m = name.match(/([０-９\d]+(?:[.．][０-９\d]+)?)\s*[mｍ][gｇ]/i);
+  const m = name.match(/([０-９\d]+(?:[.\uff0e][０-９\d]+)?)\s*[m\uff4d][g\uff47]/i);
   if (!m) return null;
-  const num = m[1].replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  const num = m[1].replace(/[\uff10-\uff19]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
   return parseFloat(num);
 }
 
 // ============================================================
 // 薬剤名から基本名を抽出（規格違いをグループ化するため）
 // 例: "デュロキセチンカプセル20mg" → "デュロキセチン"
-//     "セルトラリン錠25mg「トーワ」" → "セルトラリン"
+//     "セルトラリン932025mg「トーワ」" → "セルトラリン"
 // ============================================================
 
 function extractBaseName(name) {
@@ -142,20 +142,10 @@ function injectButtons() {
         wrap.className = 'taper-helper-btn-wrap';
         wrap.style.cssText = 'padding:8px 0 4px 8px;display:flex;gap:8px;align-items:center;';
         wrap.appendChild(makeTaperBtn());
-        // 前回のスケジュール状態があれば「スケジュール編集」ボタンも追加
-        if (lastScheduleState) {
-          wrap.appendChild(makeReopenBtn());
-        }
+        wrap.appendChild(makeDirectScheduleBtn());
         // モーダル内の処方リスト末尾に追加
         const rpArea = doModal.querySelector('.rp-list') || hasRp.closest('.rp-list') || doModal;
         rpArea.appendChild(wrap);
-      }
-    }
-    // 既にボタンラップがあるが、スケジュール編集ボタンがない場合は追加
-    if (doModal && lastScheduleState) {
-      const wrap = doModal.querySelector('.taper-helper-btn-wrap');
-      if (wrap && !wrap.querySelector('.taper-reopen-btn')) {
-        wrap.appendChild(makeReopenBtn());
       }
     }
   }).observe(document.body, { childList: true, subtree: true });
@@ -170,22 +160,45 @@ function makeTaperBtn() {
   return b;
 }
 
-function makeReopenBtn() {
+function makeDirectScheduleBtn() {
   const b = document.createElement('button');
-  b.className = 'taper-reopen-btn';
+  b.className = 'taper-direct-btn';
   b.textContent = '← スケジュール編集';
   b.style.cssText = 'padding:4px 14px;background:#ff9800;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold;';
   b.addEventListener('click', e => {
     e.preventDefault();
     e.stopPropagation();
+    // 前回の状態があればそのまま再開、なければ全薬剤を自動選択してスケジュールへ
     if (lastScheduleState) {
-      const { allMeds, variableMeds, orderRps, ctx } = lastScheduleState;
-      showScheduleModal(allMeds, variableMeds, orderRps, ctx);
+      showScheduleModal(lastScheduleState.allMeds, lastScheduleState.variableMeds,
+                        lastScheduleState.orderRps, lastScheduleState.ctx);
     } else {
-      openModal();
+      openDirectSchedule();
     }
   });
   return b;
+}
+
+/** 薬剤選択をスキップして直接スケジュール画面を開く */
+function openDirectSchedule() {
+  destroyModal();
+  const ctx = detectContext();
+  if (!ctx) return alert('処方入力エリアが見つかりません。');
+  const orderRps = ctx.orderRps;
+  if (!orderRps?.length) return alert('先に処方欄に薬剤を入力してください。');
+
+  const allMeds = [];
+  orderRps.forEach(rp => rp.orderMedicines.forEach(m => {
+    if (!allMeds.find(x => x.medicineName === m.medicineName))
+      allMeds.push({
+        medicineName: m.medicineName, unit: m.unit, medicine: m.medicine,
+        dosageForm: m.dosageForm, mg: extractMg(m.medicineName),
+        currentDose: parseFloat(m.dose) || 1,
+      });
+  }));
+  // 全薬剤を漸増漸減対象として選択
+  allMeds.forEach(m => { m._variable = true; });
+  showScheduleModal(allMeds, allMeds, orderRps, ctx);
 }
 
 // ============================================================
@@ -539,8 +552,8 @@ function getTableState() {
 function shortName(name) {
   // 「錠」「カプセル」「OD錠」等の後ろの規格部分のみ残して短縮
   const m = name.match(/^(.+?[\u9320\u5264\u7c92\u5305])(.*)$/);
-  if (m && m[1].length > 10) return m[1].substring(0, 10) + '…' + (m[2] || '');
-  if (name.length > 15) return name.substring(0, 15) + '…';
+  if (m && m[1].length > 10) return m[1].substring(0, 10) + '\u2026' + (m[2] || '');
+  if (name.length > 15) return name.substring(0, 15) + '\u2026';
   return name;
 }
 
@@ -604,7 +617,7 @@ function recalcAll(allMeds, variableMeds) {
   document.querySelectorAll('.tp-days').forEach((inp, i) => {
     const d = parseInt(inp.value) || 7;
     const cell = document.querySelector(`.tp-period[data-step="${i}"]`);
-    if (cell) cell.textContent = `${cum}\u301C${cum + d - 1}日目`;
+    if (cell) cell.textContent = `${cum}～${cum + d - 1}日目`;
     cum += d;
   });
 
@@ -845,7 +858,7 @@ function showPreview(schedule, meds, variableMeds) {
           h += `<td rowspan="${active.length}" style="${thStyle}font-weight:bold;color:#1565c0;">${groupMgTotals[gi]}mg</td>`;
         });
         h += `<td rowspan="${active.length}" style="${thStyle}">${step.days}日</td>`;
-        h += `<td rowspan="${active.length}" style="${thStyle}min-width:70px;">${step.startDay}\u301C${step.endDay}日目</td>`;
+        h += `<td rowspan="${active.length}" style="${thStyle}min-width:70px;">${step.startDay}～${step.endDay}日目</td>`;
       }
       h += '</tr>';
     });
@@ -884,8 +897,14 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
 
   const totalRps = nonTaperRps.length + validSteps.length;
   const msg = nonTaperRps.length > 0
-    ? `【${ctx.label}】\n非漸増漸減Rp: ${nonTaperRps.length}個（保持）\n漸増漸減Rp: ${validSteps.length}個（新規作成）\n合計: ${totalRps}個のRpになります。\nよろしいですか？`
-    : `【${ctx.label}】\n現在のRp (${orderRps.length}個) → ${validSteps.length}個に置き換えます。\nよろしいですか？`;
+    ? `【${ctx.label}】
+非漸増漸減Rp: ${nonTaperRps.length}個（保持）
+漸増漸減Rp: ${validSteps.length}個（新規作成）
+合計: ${totalRps}個のRpになります。
+よろしいですか？`
+    : `【${ctx.label}】
+現在のRp (${orderRps.length}個) → ${validSteps.length}個に置き換えます。
+よろしいですか？`;
 
   if (!confirm(msg)) return;
 
@@ -916,7 +935,7 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
     rp.rpNumber = startIdx + idx + 1;
     rp.administrationString = adminStr;
     rp.numOfDays = step.days;
-    rp.comment = `${step.startDay}\u301C${step.endDay}日目`;
+    rp.comment = `${step.startDay}～${step.endDay}日目`;
     rp.selected = true;
     rp.orderMedicines = [];
 
@@ -942,12 +961,13 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
 
   const taperCount = orderRps.length - nonTaperRps.length;
   const resultMsg = nonTaperRps.length > 0
-    ? `${orderRps.length} 個のRpを作成しました。\n（非漸増漸減: ${nonTaperRps.length}個 + 漸増漸減: ${taperCount}個）\n内容を確認の上「指示」を押してください。`
-    : `${orderRps.length} 個のRpを作成しました。\n内容を確認の上「指示」を押してください。`;
+    ? `${orderRps.length} 個のRpを作成しました。
+（非漸増漸減: ${nonTaperRps.length}個 + 漸増漸減: ${taperCount}個）
+内容を確認の上「指示」を押してください。`
+    : `${orderRps.length} 個のRpを作成しました。
+内容を確認の上「指示」を押してください。`;
   // スケジュール状態を記憶（Doフォームから再編集できるように）
   lastScheduleState = { allMeds, variableMeds, orderRps, ctx };
-  // 既存のスケジュール編集ボタンを削除（MutationObserverが再注入する）
-  document.querySelectorAll('.taper-reopen-btn').forEach(b => b.remove());
 
   alert(resultMsg);
   destroyModal();
@@ -959,7 +979,7 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
 
 function init() {
   setTimeout(injectButtons, 1500);
-  console.log('[漸増漸減ヘルパー] v0.6.4 初期化完了');
+  console.log('[漸増漸減ヘルパー] v0.6.5 初期化完了');
 }
 
 if (document.readyState === 'complete') init();
