@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Waroku 漸増漸減ヘルパー
 // @namespace    http://tampermonkey.net/
-// @version      0.6.1
+// @version      0.6.2
 // @description  waroku処方入力で薬剤の漸増・漸減スケジュールを一括入力するヘルパー（薬剤選択・複数規格対応）
 // @match        https://*.waroku.net/patient/karte*
 // @grant        none
@@ -67,20 +67,20 @@ function deepClean(obj) {
 // ============================================================
 
 function extractMg(name) {
-  const m = name.match(/([０-９\d]+(?:[.．][０-９\d]+)?)\s*[mｍ][gｇ]/i);
+  const m = name.match(/([０-９\d]+(?:[.\uff0e][\uff10-９\d]+)?)\s*[m\uff4d][g\uff47]/i);
   if (!m) return null;
-  const num = m[1].replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  const num = m[1].replace(/[\uff10-\uff19]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
   return parseFloat(num);
 }
 
 // ============================================================
 // 薬剤名から基本名を抽出（規格違いをグループ化するため）
 // 例: "デュロキセチンカプセル20mg" → "デュロキセチン"
-//     "セルトラリン錠25mg「トーワ」" → "セルトラリン"
+//     "セルトラリン932025mg「トーワ」" → "セルトラリン"
 // ============================================================
 
 function extractBaseName(name) {
-  const m = name.match(/^(.+?)\s*(錠|ＯＤ錠|OD錠|カプセル|細粒|散|顆粒|シロップ|液|ドライシロップ|テープ|パッチ|注射|坐剤|吸入)/);
+  const m = name.match(/^(.+?)\s*(錠|\uff2f\uff24錠|OD錠|カプセル|細粒|散|顆粒|シロップ|液|ドライシロップ|テープ|パッチ|注射|坐剤|吸入)/);
   return m ? m[1] : name;
 }
 
@@ -120,17 +120,33 @@ function savePresets(p) { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); 
 
 function injectButtons() {
   new MutationObserver(() => {
-    document.querySelectorAll('div[ng-click*="createNewRp"][ng-click*="PRESCRIBE"]').forEach(link => {
-      const p = link.parentElement;
-      if (!p || p.querySelector('.taper-helper-btn')) return;
-      if (!link.closest('.modal')) p.appendChild(makeTaperBtn());
-    });
+    // 新規処方エリア: rp-list の末尾に1つだけボタンを配置
+    const rpList = document.querySelector('.rp-list');
+    if (rpList && !rpList.closest('.modal') && !rpList.querySelector('.taper-helper-btn-wrap')) {
+      const hasRp = rpList.querySelector('div[ng-click*="createNewRp"][ng-click*="PRESCRIBE"]');
+      if (hasRp) {
+        const wrap = document.createElement('div');
+        wrap.className = 'taper-helper-btn-wrap';
+        wrap.style.cssText = 'padding:8px 0 4px 8px;';
+        wrap.appendChild(makeTaperBtn());
+        rpList.appendChild(wrap);
+      }
+    }
+
+    // Doオーダーフォーム: モーダル内に1つだけボタンを配置
     const doModal = document.querySelector('.modal.modal-fixed-footer.open');
-    if (doModal) doModal.querySelectorAll('div[ng-click*="createNewRp"]').forEach(link => {
-      const p = link.parentElement;
-      if (!p || p.querySelector('.taper-helper-btn')) return;
-      p.appendChild(makeTaperBtn());
-    });
+    if (doModal && !doModal.querySelector('.taper-helper-btn-wrap')) {
+      const hasRp = doModal.querySelector('div[ng-click*="createNewRp"]');
+      if (hasRp) {
+        const wrap = document.createElement('div');
+        wrap.className = 'taper-helper-btn-wrap';
+        wrap.style.cssText = 'padding:8px 0 4px 8px;';
+        wrap.appendChild(makeTaperBtn());
+        // モーダル内の処方リスト末尾に追加
+        const rpArea = doModal.querySelector('.rp-list') || hasRp.closest('.rp-list') || doModal;
+        rpArea.appendChild(wrap);
+      }
+    }
   }).observe(document.body, { childList: true, subtree: true });
 }
 
@@ -159,7 +175,8 @@ function openModal() {
   if (!ctx) return alert('処方入力エリアが見つかりません。');
 
   const orderRps = ctx.orderRps;
-  if (!orderRps?.length) return alert('先に処方欄に薬剤を入力してください。\n漸増漸減に使う全ての規格（例: 20mg と 30mg）を1つのRpに入れてから開いてください。');
+  if (!orderRps?.length) return alert('先に処方欄に薬剤を入力してください。
+漸増漸減に使う全ての規格（例: 20mg と 30mg）を1つのRpに入れてから開いてください。');
 
   // 全薬剤を収集（重複排除、現在の用量も保持）
   const allMeds = [];
@@ -172,7 +189,7 @@ function openModal() {
       });
   }));
 
-  // 薬剤が1つしかない場合はそのままスケジュール画面へ
+  // 薬剤が1つしかない場合はそのまますケジュール画面へ
   if (allMeds.length <= 1) {
     allMeds.forEach(m => { m._variable = true; });
     showScheduleModal(allMeds, allMeds, orderRps, ctx);
@@ -277,7 +294,7 @@ const ADMIN_DATA = [
     '1日1回', '2日に1回', '1週間に1回', '1週間に2回',
   ]},
   { cat: '処方（頓用）', items: [
-    '疼痛時', '発熱時', '不眠時', '不安時', '嘔気時', '頭痛時',
+    '痛痛時', '発熱時', '不眠時', '不安時', '嗄気時', '頭痛時',
     '便秘時', '咳嗽時',
   ]},
   { cat: '処方（外用）', items: [
@@ -829,8 +846,14 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
 
   const totalRps = nonTaperRps.length + validSteps.length;
   const msg = nonTaperRps.length > 0
-    ? `【${ctx.label}】\n非漸増漸減Rp: ${nonTaperRps.length}個（保持）\n漸増漸減Rp: ${validSteps.length}個（新規作成）\n合計: ${totalRps}個のRpになります。\nよろしいですか？`
-    : `【${ctx.label}】\n現在のRp (${orderRps.length}個) → ${validSteps.length}個に置き換えます。\nよろしいですか？`;
+    ? `【${ctx.label}】
+非漸増漸減Rp: ${nonTaperRps.length}個（保持）
+漸増漸減Rp: ${validSteps.length}個（新規作成）
+合計: ${totalRps}個のRpになります。
+よろしいですか？`
+    : `【${ctx.label}】
+現在のRp (${orderRps.length}個) → ${validSteps.length}個に置き換えます。
+よろしいですか？`;
 
   if (!confirm(msg)) return;
 
@@ -887,8 +910,11 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
 
   const taperCount = orderRps.length - nonTaperRps.length;
   const resultMsg = nonTaperRps.length > 0
-    ? `${orderRps.length} 個のRpを作成しました。\n（非漸増漸減: ${nonTaperRps.length}個 + 漸増漸減: ${taperCount}個）\n内容を確認の上「指示」を押してください。`
-    : `${orderRps.length} 個のRpを作成しました。\n内容を確認の上「指示」を押してください。`;
+    ? `${orderRps.length} 個のRpを作成しました。
+（非漸増漸減: ${nonTaperRps.length}個 + 漸増漸減: ${taperCount}個）
+内容を確認の上「指示」を押してください。`
+    : `${orderRps.length} 個のRpを作成しました。
+内容を確認の上「指示」を押してください。`;
   alert(resultMsg);
   destroyModal();
 }
@@ -899,11 +925,10 @@ function applySchedule(schedule, meds, variableMeds, orderRps, ctx) {
 
 function init() {
   setTimeout(injectButtons, 1500);
-  console.log('[漸増漸減ヘルパー] v0.6.1 初期化完了');
+  console.log('[漸増漸減ヘルパー] v0.6.2 初期化完了');
 }
 
 if (document.readyState === 'complete') init();
 else window.addEventListener('load', init);
 
 })();
-
